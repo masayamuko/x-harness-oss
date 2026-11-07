@@ -2,6 +2,24 @@ import type { XUser, XTweet, XApiResponse, CreateTweetParams, XClientConfig, XTw
 import { buildOAuth1Header } from './oauth1.js';
 import type { OAuth1Config } from './oauth1.js';
 
+/** Optional query overrides for timeline-style GET endpoints (bookmarks / liked_tweets). */
+export interface TimelineQueryOptions {
+  /** 1-100. Defaults to 100. */
+  maxResults?: number;
+  /** Extra query params (e.g. 'tweet.fields', 'expansions'). Override the defaults. */
+  params?: Record<string, string>;
+}
+
+function buildTimelineParams(paginationToken?: string, options?: TimelineQueryOptions): URLSearchParams {
+  const params = new URLSearchParams({ 'tweet.fields': 'author_id,created_at,public_metrics', max_results: '100' });
+  if (options?.maxResults !== undefined) params.set('max_results', String(options.maxResults));
+  if (options?.params) {
+    for (const [k, v] of Object.entries(options.params)) params.set(k, v);
+  }
+  if (paginationToken) params.set('pagination_token', paginationToken);
+  return params;
+}
+
 export class XClient {
   private config: XClientConfig;
   private readonly baseUrl = 'https://api.x.com/2';
@@ -307,10 +325,14 @@ export class XClient {
     await this.request('DELETE', `/users/${userId}/likes/${tweetId}`);
   }
 
-  async getLikedTweets(userId: string, paginationToken?: string): Promise<XApiResponse<XTweetWithMetrics[]>> {
-    const params = new URLSearchParams({ 'tweet.fields': 'author_id,created_at,public_metrics', max_results: '100' });
-    if (paginationToken) params.set('pagination_token', paginationToken);
-    return this.get<XApiResponse<XTweetWithMetrics[]>>(`/users/${userId}/liked_tweets?${params}`);
+  /**
+   * GET /2/users/:id/liked_tweets
+   * `options` is optional; without it the original defaults are kept (backward compatible).
+   * Values in `options.params` override the defaults (e.g. tweet.fields, expansions).
+   */
+  async getLikedTweets(userId: string, paginationToken?: string, options?: TimelineQueryOptions): Promise<XApiResponse<XTweetWithMetrics[]>> {
+    const params = buildTimelineParams(paginationToken, options);
+    return this.get<XApiResponse<XTweetWithMetrics[]>>(`/users/${encodeURIComponent(userId)}/liked_tweets?${params}`);
   }
 
   async retweet(userId: string, tweetId: string): Promise<void> {
@@ -364,10 +386,13 @@ export class XClient {
     return this.get<XApiResponse<XDmEvent[]>>(`/dm_events?${params}`);
   }
 
-  async getBookmarks(userId: string, paginationToken?: string): Promise<XApiResponse<XTweetWithMetrics[]>> {
-    const params = new URLSearchParams({ 'tweet.fields': 'author_id,created_at,public_metrics', max_results: '100' });
-    if (paginationToken) params.set('pagination_token', paginationToken);
-    return this.get<XApiResponse<XTweetWithMetrics[]>>(`/users/${userId}/bookmarks?${params}`);
+  /**
+   * GET /2/users/:id/bookmarks (OAuth 2.0 user context only)
+   * `options` is optional; without it the original defaults are kept (backward compatible).
+   */
+  async getBookmarks(userId: string, paginationToken?: string, options?: TimelineQueryOptions): Promise<XApiResponse<XTweetWithMetrics[]>> {
+    const params = buildTimelineParams(paginationToken, options);
+    return this.get<XApiResponse<XTweetWithMetrics[]>>(`/users/${encodeURIComponent(userId)}/bookmarks?${params}`);
   }
 
   async bookmark(userId: string, tweetId: string): Promise<void> {
@@ -444,7 +469,7 @@ export class XClient {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new XApiError(`X API ${method} ${path} failed: ${res.status} ${text}`, res.status);
+      throw new XApiError(`X API ${method} ${path} failed: ${res.status} ${text}`, res.status, text);
     }
 
     return res.json() as Promise<T>;
@@ -481,6 +506,8 @@ export class XApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    /** Raw X API error response body (JSON text from X; contains no credentials). */
+    public readonly responseBody?: string,
   ) {
     super(message);
     this.name = 'XApiError';

@@ -21,6 +21,15 @@ export interface XTweet {
 
 export interface XApiResponse<T> {
   data: T;
+  /** Expanded objects (users / tweets / media) when `expansions` is requested. */
+  includes?: {
+    users?: XUser[];
+    tweets?: Array<Record<string, unknown>>;
+    media?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+  };
+  /** Partial errors returned alongside data (e.g. deleted referenced tweets). */
+  errors?: Array<Record<string, unknown>>;
   meta?: {
     result_count?: number;
     next_token?: string;
