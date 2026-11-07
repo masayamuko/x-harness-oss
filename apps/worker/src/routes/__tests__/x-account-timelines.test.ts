@@ -66,6 +66,10 @@ describe('parseTimelineQuery', () => {
       expect(parseTimelineQuery(v, undefined).ok).toBe(false);
     }
   });
+  it('enforces a per-endpoint minimum (liked_tweets: 5)', () => {
+    expect(parseTimelineQuery('4', undefined, 5).ok).toBe(false);
+    expect(parseTimelineQuery('5', undefined, 5)).toMatchObject({ ok: true, maxResults: 5 });
+  });
   it('rejects pagination_token with unsafe characters', () => {
     expect(parseTimelineQuery(undefined, 'abc&expansions=x').ok).toBe(false);
     expect(parseTimelineQuery(undefined, '7140dibdnow9c7btw3w29grvxfcgvpb9n9coehpk7xz5i').ok).toBe(true);
@@ -96,11 +100,14 @@ describe('GET /api/x-accounts/:id/bookmarks', () => {
     expect(init.method).toBe('GET');
   });
 
-  it('uses OAuth2 bearer for bookmarks even when OAuth1 creds exist', async () => {
+  it('rejects bookmarks for OAuth1-configured accounts without calling X (bookmarks need OAuth 2.0)', async () => {
     getXAccountByIdMock.mockResolvedValueOnce({ ...baseAccount, consumer_key: 'ck', consumer_secret: 'cs', access_token_secret: 'ats' });
-    await get('/api/x-accounts/acc1/bookmarks');
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer oauth2-access-token-SECRET');
+    const res = await get('/api/x-accounts/acc1/bookmarks');
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(JSON.parse(text).error.title).toBe('OAuth 2.0 user token required');
+    expect(text).not.toContain('SECRET');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns 404 for unknown account without calling X', async () => {
@@ -147,6 +154,15 @@ describe('GET /api/x-accounts/:id/bookmarks', () => {
     errSpy.mockRestore();
   });
 
+  it('clips long X error detail', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Bad', detail: 'x'.repeat(1000) }), { status: 400 }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await get('/api/x-accounts/acc1/bookmarks');
+    const body = await res.json() as any;
+    expect(body.error.detail.length).toBeLessThanOrEqual(301);
+    errSpy.mockRestore();
+  });
+
   it('does not echo non-JSON X error bodies', async () => {
     fetchMock.mockResolvedValueOnce(new Response('<html>oops token=SECRET</html>', { status: 502 }));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -169,6 +185,12 @@ describe('GET /api/x-accounts/:id/liked-tweets', () => {
     expect(url.pathname).toBe('/2/users/12345/liked_tweets');
     expect(url.searchParams.get('max_results')).toBe('50');
     expect(url.searchParams.get('expansions')).toContain('attachments.media_keys');
+  });
+
+  it('returns 400 for max_results below 5 without calling X', async () => {
+    const res = await get('/api/x-accounts/acc1/liked-tweets?max_results=3');
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('uses OAuth1 when the account has 1.0a credentials (same as existing routes)', async () => {
