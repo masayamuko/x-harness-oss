@@ -332,8 +332,8 @@ POST   /api/users/:id/link            # チャネルリンク
 POST   /api/x-accounts                # アカウント追加
 GET    /api/x-accounts                # 一覧
 PUT    /api/x-accounts/:id            # 更新
-GET    /api/x-accounts/:id/bookmarks    # ログイン中アカウントのブックマーク（読み取り専用・?max_results=1-100&pagination_token=。OAuth 2.0 ユーザートークン＋bookmark.read が必要）
-GET    /api/x-accounts/:id/liked-tweets # ログイン中アカウントのいいね（読み取り専用・?max_results=1-100&pagination_token=。like.read が必要）
+GET    /api/x-accounts/:id/bookmarks    # ログイン中アカウントのブックマーク（読み取り専用・?max_results=1-100&pagination_token=。OAuth 2.0 ユーザートークン＋bookmark.read が必要。OAuth 1.0a 設定のアカウントは 400）
+GET    /api/x-accounts/:id/liked-tweets # ログイン中アカウントのいいね（読み取り専用・?max_results=5-100&pagination_token=。like.read が必要）
 
 # 分析
 GET    /api/analytics/followers       # フォロワー推移

@@ -31,12 +31,16 @@ export type ParsedTimelineQuery =
   | { ok: true; maxResults: number; paginationToken?: string }
   | { ok: false; error: string };
 
-export function parseTimelineQuery(maxResultsRaw: string | undefined, paginationTokenRaw: string | undefined): ParsedTimelineQuery {
+/**
+ * @param minResults X API minimum for the endpoint (bookmarks: 1, liked_tweets: 5).
+ */
+export function parseTimelineQuery(maxResultsRaw: string | undefined, paginationTokenRaw: string | undefined, minResults = 1): ParsedTimelineQuery {
   let maxResults = DEFAULT_MAX_RESULTS;
   if (maxResultsRaw !== undefined && maxResultsRaw !== '') {
-    if (!/^\d+$/.test(maxResultsRaw)) return { ok: false, error: 'max_results must be an integer between 1 and 100' };
+    const msg = `max_results must be an integer between ${minResults} and 100`;
+    if (!/^\d+$/.test(maxResultsRaw)) return { ok: false, error: msg };
     maxResults = Number(maxResultsRaw);
-    if (maxResults < 1 || maxResults > 100) return { ok: false, error: 'max_results must be an integer between 1 and 100' };
+    if (maxResults < minResults || maxResults > 100) return { ok: false, error: msg };
   }
   let paginationToken: string | undefined;
   if (paginationTokenRaw !== undefined && paginationTokenRaw !== '') {
@@ -60,11 +64,17 @@ function buildClient(account: DbXAccount): XClient {
 }
 
 /**
- * Bookmarks only accept OAuth 2.0 user context (X API spec), so always use the
- * stored access_token as a bearer token. OAuth1-only accounts will get a 403 from X.
+ * Bookmarks only accept OAuth 2.0 user context (X API spec). When an account has
+ * OAuth 1.0a credentials, the existing routes treat access_token as the 1.0a token,
+ * so a bookmarks call could never succeed — reject before calling X (no API cost).
  */
-function buildOAuth2Client(account: DbXAccount): XClient {
-  return new XClient(account.access_token);
+function hasOAuth1Credentials(account: DbXAccount): boolean {
+  return !!(account.consumer_key && account.consumer_secret && account.access_token_secret);
+}
+
+const MAX_ERROR_TEXT = 300;
+function clip(v: string): string {
+  return v.length > MAX_ERROR_TEXT ? `${v.slice(0, MAX_ERROR_TEXT)}…` : v;
 }
 
 /** Extract only safe, user-facing fields from an X API error. Never echoes tokens or headers. */
@@ -78,10 +88,10 @@ export function toSafeXError(err: unknown): { status: number; title: string; det
     if (err.responseBody) {
       try {
         const parsed = JSON.parse(err.responseBody) as Record<string, unknown>;
-        if (typeof parsed.title === 'string') title = parsed.title;
-        if (typeof parsed.detail === 'string') detail = parsed.detail;
+        if (typeof parsed.title === 'string') title = clip(parsed.title);
+        if (typeof parsed.detail === 'string') detail = clip(parsed.detail);
         else if (Array.isArray(parsed.errors) && parsed.errors[0] && typeof (parsed.errors[0] as any).message === 'string') {
-          detail = (parsed.errors[0] as any).message;
+          detail = clip((parsed.errors[0] as any).message);
         }
       } catch {
         // non-JSON body: do not echo raw text
@@ -96,7 +106,7 @@ export function toSafeXError(err: unknown): { status: number; title: string; det
 type Kind = 'bookmarks' | 'liked-tweets';
 
 async function handleTimeline(c: Context<Env>, kind: Kind): Promise<Response> {
-  const parsed = parseTimelineQuery(c.req.query('max_results'), c.req.query('pagination_token'));
+  const parsed = parseTimelineQuery(c.req.query('max_results'), c.req.query('pagination_token'), kind === 'liked-tweets' ? 5 : 1);
   if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
   const id = c.req.param('id');
@@ -104,10 +114,17 @@ async function handleTimeline(c: Context<Env>, kind: Kind): Promise<Response> {
   const account = await getXAccountById(c.env.DB, id);
   if (!account) return c.json({ success: false, error: 'Not found' }, 404);
 
+  if (kind === 'bookmarks' && hasOAuth1Credentials(account)) {
+    return c.json({
+      success: false,
+      error: { status: 400, title: 'OAuth 2.0 user token required', detail: 'X bookmarks API only supports OAuth 2.0 user context (scope bookmark.read). This account is configured with OAuth 1.0a credentials.' },
+    }, 400);
+  }
+
   const options = { maxResults: parsed.maxResults, params: TIMELINE_QUERY_PARAMS };
   try {
     const res = kind === 'bookmarks'
-      ? await buildOAuth2Client(account).getBookmarks(account.x_user_id, parsed.paginationToken, options)
+      ? await new XClient(account.access_token).getBookmarks(account.x_user_id, parsed.paginationToken, options)
       : await buildClient(account).getLikedTweets(account.x_user_id, parsed.paginationToken, options);
     return c.json({
       success: true,
