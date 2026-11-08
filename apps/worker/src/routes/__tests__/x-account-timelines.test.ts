@@ -19,9 +19,12 @@ const baseAccount = {
 
 const getXAccountByIdMock = vi.fn(async (_db: any, id: string): Promise<any> => (id === 'acc1' ? { ...baseAccount } : null));
 
+const updateXAccountMock = vi.fn(async (..._a: any[]) => null);
+
 vi.mock('@x-harness/db', async (importOriginal) => ({
   ...(await importOriginal<any>()),
   getXAccountById: (...a: any[]) => getXAccountByIdMock(...(a as [any, string])),
+  updateXAccount: (...a: any[]) => updateXAccountMock(...a),
 }));
 
 import { xAccountTimelines, parseTimelineQuery } from '../x-account-timelines.js';
@@ -198,6 +201,41 @@ describe('GET /api/x-accounts/:id/liked-tweets', () => {
     await get('/api/x-accounts/acc1/liked-tweets');
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toMatch(/^OAuth /);
+  });
+});
+
+describe('OAuth2 auto-refresh (same client-factory as the other routes)', () => {
+  const oauth2Env = { DB: {}, OAUTH2_CLIENT_ID: 'cid', OAUTH2_CLIENT_SECRET: 'csecret-SECRET' } as any;
+
+  it('on 401, refreshes once, saves the rotated tokens, and retries with the new access token', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"title":"Unauthorized"}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'new-access', refresh_token: 'new-refresh' }), { status: 200 }));
+    const res = await xAccountTimelines.request(new Request('http://local/api/x-accounts/acc1/bookmarks'), undefined, oauth2Env);
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    const [tokenUrl, tokenInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(tokenUrl).toBe('https://api.x.com/2/oauth2/token');
+    expect(String(tokenInit.body)).toContain('grant_type=refresh_token');
+    expect(String(tokenInit.body)).toContain('refresh_token=refresh-token-SECRET');
+
+    expect(updateXAccountMock).toHaveBeenCalledWith(oauth2Env.DB, 'acc1', { accessToken: 'new-access', refreshToken: 'new-refresh' });
+    const [, retryInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect((retryInit.headers as Record<string, string>).Authorization).toBe('Bearer new-access');
+  });
+
+  it('does not retry again when the refresh itself fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"title":"Unauthorized"}', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 400 }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await xAccountTimelines.request(new Request('http://local/api/x-accounts/acc1/liked-tweets'), undefined, oauth2Env);
+    expect(res.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(updateXAccountMock).not.toHaveBeenCalled();
+    expect(await res.text()).not.toContain('SECRET');
+    errSpy.mockRestore();
   });
 });
 

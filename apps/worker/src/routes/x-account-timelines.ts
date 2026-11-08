@@ -3,8 +3,9 @@ import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getXAccountById } from '@x-harness/db';
 import type { DbXAccount } from '@x-harness/db';
-import { XClient, XApiError, XApiRateLimitError } from '@x-harness/x-sdk';
+import { XApiError, XApiRateLimitError } from '@x-harness/x-sdk';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 /**
  * Read-only endpoints for the logged-in account's own bookmarks / liked tweets.
@@ -48,19 +49,6 @@ export function parseTimelineQuery(maxResultsRaw: string | undefined, pagination
     paginationToken = paginationTokenRaw;
   }
   return { ok: true, maxResults, paginationToken };
-}
-
-/** Same construction as the existing x-accounts routes (OAuth1 when all 1.0a creds exist, else bearer access_token). */
-function buildClient(account: DbXAccount): XClient {
-  return account.consumer_key && account.consumer_secret && account.access_token_secret
-    ? new XClient({
-        type: 'oauth1',
-        consumerKey: account.consumer_key,
-        consumerSecret: account.consumer_secret,
-        accessToken: account.access_token,
-        accessTokenSecret: account.access_token_secret,
-      })
-    : new XClient(account.access_token);
 }
 
 /**
@@ -123,9 +111,12 @@ async function handleTimeline(c: Context<Env>, kind: Kind): Promise<Response> {
 
   const options = { maxResults: parsed.maxResults, params: TIMELINE_QUERY_PARAMS };
   try {
+    // Same client as every other route: OAuth1 → OAuth2 (auto-refresh on 401) → bearer.
+    // OAuth1 accounts never reach here for bookmarks (rejected above).
+    const xClient = buildXClientForAccount(account, c.env);
     const res = kind === 'bookmarks'
-      ? await new XClient(account.access_token).getBookmarks(account.x_user_id, parsed.paginationToken, options)
-      : await buildClient(account).getLikedTweets(account.x_user_id, parsed.paginationToken, options);
+      ? await xClient.getBookmarks(account.x_user_id, parsed.paginationToken, options)
+      : await xClient.getLikedTweets(account.x_user_id, parsed.paginationToken, options);
     return c.json({
       success: true,
       data: res.data ?? [],
