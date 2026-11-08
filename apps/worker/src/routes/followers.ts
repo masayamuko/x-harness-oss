@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getFollowers, getFollowerById, getFollowerCount, addTagToFollower, removeTagFromFollower, getFollowerTags, getTagById, getXAccounts, incrementApiUsage, getEndpointUsageForDate } from '@x-harness/db';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 interface FollowerSearchResult {
   id: string;
@@ -82,7 +83,6 @@ followers.get('/api/users/search', async (c) => {
       return c.json({ success: true, data, capped: true });
     }
 
-    const { XClient } = await import('@x-harness/x-sdk');
     const accounts = await getXAccounts(c.env.DB);
     const account = accounts[0] ?? null;
     if (!account) {
@@ -102,15 +102,7 @@ followers.get('/api/users/search', async (c) => {
       return c.json({ success: true, data, capped: true });
     }
 
-    const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-      ? new XClient({
-          type: 'oauth1',
-          consumerKey: account.consumer_key,
-          consumerSecret: account.consumer_secret,
-          accessToken: account.access_token,
-          accessTokenSecret: account.access_token_secret,
-        })
-      : new XClient(account.access_token);
+    const xClient = buildXClientForAccount(account, c.env);
 
     // Track billable spend just before the call — failures are billed too
     c.executionCtx.waitUntil(incrementApiUsage(c.env.DB, account.id, 'user_search'));

@@ -2,7 +2,9 @@ import { Hono } from 'hono';
 import { XClient, XApiRateLimitError } from '@x-harness/x-sdk';
 import type { ArticleContentState, ArticleContentBlock, ArticleEntity } from '@x-harness/x-sdk';
 import { getXAccountById, incrementApiUsage } from '@x-harness/db';
+import type { DbXAccount } from '@x-harness/db';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 const articles = new Hono<Env>();
 
@@ -16,16 +18,8 @@ export function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
-export function buildXClient(account: { consumer_key: string | null; consumer_secret: string | null; access_token: string; access_token_secret: string | null }): XClient {
-  return account.consumer_key && account.consumer_secret && account.access_token_secret
-    ? new XClient({
-        type: 'oauth1',
-        consumerKey: account.consumer_key,
-        consumerSecret: account.consumer_secret,
-        accessToken: account.access_token,
-        accessTokenSecret: account.access_token_secret,
-      })
-    : new XClient(account.access_token);
+export function buildXClient(account: DbXAccount, env: Env['Bindings']): XClient {
+  return buildXClientForAccount(account, env);
 }
 
 // Convert markdown-lite body text into DraftJS-style content blocks.
@@ -338,7 +332,7 @@ articles.post('/api/articles/draft', async (c) => {
 
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClient(account, c.env);
 
   try {
     // Inline images are uploaded first — explicitly, not inline in the call —
@@ -378,7 +372,7 @@ articles.post('/api/articles/:id/publish', async (c) => {
 
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClient(account, c.env);
 
   try {
     const result = await xClient.publishArticle(articleId);
@@ -400,7 +394,7 @@ articles.get('/api/news/search', async (c) => {
     ? await getXAccountById(c.env.DB, xAccountId)
     : (await import('@x-harness/db').then((m) => m.getXAccounts(c.env.DB)))[0] ?? null;
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClient(account, c.env);
 
   try {
     const result = await xClient.searchNews(query, maxResults);
@@ -420,7 +414,7 @@ articles.get('/api/news/:id', async (c) => {
     ? await getXAccountById(c.env.DB, xAccountId)
     : (await import('@x-harness/db').then((m) => m.getXAccounts(c.env.DB)))[0] ?? null;
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClient(account, c.env);
 
   try {
     const story = await xClient.getNews(newsId);

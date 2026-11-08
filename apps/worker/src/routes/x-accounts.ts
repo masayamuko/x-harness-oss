@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { createXAccount, getXAccounts, getXAccountById, updateXAccount, getEngagementGates, getSnapshots, hasSnapshotForToday, recordSnapshot } from '@x-harness/db';
 import { XClient } from '@x-harness/x-sdk';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 const xAccounts = new Hono<Env>();
 
@@ -123,15 +124,7 @@ xAccounts.post('/api/x-accounts/:id/snapshot', async (c) => {
   const already = await hasSnapshotForToday(c.env.DB, id);
   if (already) return c.json({ success: true, message: 'Already recorded today' });
 
-  const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-    ? new XClient({
-        type: 'oauth1',
-        consumerKey: account.consumer_key,
-        consumerSecret: account.consumer_secret,
-        accessToken: account.access_token,
-        accessTokenSecret: account.access_token_secret,
-      })
-    : new XClient(account.access_token);
+  const xClient = buildXClientForAccount(account, c.env);
 
   const me = await xClient.getMe();
   if (!me.public_metrics) return c.json({ success: false, error: 'No public_metrics' }, 500);

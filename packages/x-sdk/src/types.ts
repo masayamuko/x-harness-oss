@@ -101,7 +101,8 @@ export interface XNewsStory {
 
 export type XClientConfig =
   | { type: 'bearer'; token: string }
-  | { type: 'oauth1'; consumerKey: string; consumerSecret: string; accessToken: string; accessTokenSecret: string };
+  | { type: 'oauth1'; consumerKey: string; consumerSecret: string; accessToken: string; accessTokenSecret: string }
+  | { type: 'oauth2'; accessToken: string; refreshToken: string; clientId: string; clientSecret: string; onTokenRefresh?: (accessToken: string, refreshToken: string) => Promise<void> };
 
 export interface XTweetSearchResult {
   id: string;

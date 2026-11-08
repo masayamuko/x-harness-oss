@@ -3,7 +3,7 @@ import { buildOAuth1Header } from './oauth1.js';
 import type { OAuth1Config } from './oauth1.js';
 
 export class XClient {
-  private readonly config: XClientConfig;
+  private config: XClientConfig;
   private readonly baseUrl = 'https://api.x.com/2';
 
   constructor(config: XClientConfig | string) {
@@ -147,6 +147,8 @@ export class XClient {
         this.config as OAuth1Config,
       );
       headers.set('Authorization', authHeader);
+    } else if (this.config.type === 'oauth2') {
+      headers.set('Authorization', `Bearer ${this.config.accessToken}`);
     } else {
       headers.set('Authorization', `Bearer ${this.config.token}`);
     }
@@ -406,7 +408,7 @@ export class XClient {
     return this.request<T>('POST', path, body);
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown, isRetry = false): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -414,6 +416,8 @@ export class XClient {
 
     if (this.config.type === 'oauth1') {
       headers['Authorization'] = await buildOAuth1Header(method, url, this.config as OAuth1Config);
+    } else if (this.config.type === 'oauth2') {
+      headers['Authorization'] = `Bearer ${this.config.accessToken}`;
     } else {
       headers['Authorization'] = `Bearer ${this.config.token}`;
     }
@@ -430,12 +434,46 @@ export class XClient {
       throw new XApiRateLimitError(resetAt ? Number(resetAt) : undefined);
     }
 
+    // OAuth2 auto-refresh: on 401, refresh the token and retry once
+    if (res.status === 401 && !isRetry && this.config.type === 'oauth2') {
+      const refreshed = await this.refreshOAuth2Token();
+      if (refreshed) {
+        return this.request<T>(method, path, body, true);
+      }
+    }
+
     if (!res.ok) {
       const text = await res.text();
       throw new XApiError(`X API ${method} ${path} failed: ${res.status} ${text}`, res.status);
     }
 
     return res.json() as Promise<T>;
+  }
+
+  private async refreshOAuth2Token(): Promise<boolean> {
+    if (this.config.type !== 'oauth2') return false;
+    const { clientId, clientSecret, refreshToken, onTokenRefresh } = this.config;
+
+    const authHeader = 'Basic ' + btoa(`${clientId}:${clientSecret}`);
+    const res = await fetch('https://api.x.com/2/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+    });
+
+    if (!res.ok) return false;
+
+    const data = await res.json() as { access_token: string; refresh_token: string };
+    this.config = { ...this.config, accessToken: data.access_token, refreshToken: data.refresh_token };
+
+    if (onTokenRefresh) {
+      await onTokenRefresh(data.access_token, data.refresh_token);
+    }
+
+    return true;
   }
 }
 
