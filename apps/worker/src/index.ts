@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { XClient } from '@x-harness/x-sdk';
 import { getXAccounts, hasSnapshotForToday, recordSnapshot } from '@x-harness/db';
+import { buildXClientForAccount } from './client-factory.js';
 import { authMiddleware } from './middleware/auth.js';
 import { health } from './routes/health.js';
 import { engagementGates } from './routes/engagement-gates.js';
@@ -34,6 +35,8 @@ export type Env = {
     API_KEY: string;
     X_ACCESS_TOKEN: string;
     X_REFRESH_TOKEN: string;
+    OAUTH2_CLIENT_ID?: string;
+    OAUTH2_CLIENT_SECRET?: string;
     WORKER_URL: string;
     LINE_HARNESS_URL?: string;
     LINE_HARNESS_API_KEY?: string;
@@ -139,15 +142,7 @@ async function scheduled(
   if (autoEnabled) {
     const jobs: Promise<void>[] = [];
     for (const account of dbAccounts) {
-      const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-        ? new XClient({
-            type: 'oauth1',
-            consumerKey: account.consumer_key,
-            consumerSecret: account.consumer_secret,
-            accessToken: account.access_token,
-            accessTokenSecret: account.access_token_secret,
-          })
-        : new XClient(account.access_token);
+      const xClient = buildXClientForAccount(account, env);
       const cache = new EngagementCache();
       jobs.push(processEngagementGates(env.DB, xClient, account.id, false, cache));
       jobs.push(processScheduledPosts(env.DB, xClient, account.id));
@@ -160,15 +155,7 @@ async function scheduled(
     try {
       const alreadyRecorded = await hasSnapshotForToday(env.DB, account.id);
       if (alreadyRecorded) continue;
-      const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-        ? new XClient({
-            type: 'oauth1',
-            consumerKey: account.consumer_key,
-            consumerSecret: account.consumer_secret,
-            accessToken: account.access_token,
-            accessTokenSecret: account.access_token_secret,
-          })
-        : new XClient(account.access_token);
+      const xClient = buildXClientForAccount(account, env);
       const me = await xClient.getMe();
       if (me.public_metrics) {
         await recordSnapshot(env.DB, {
@@ -188,15 +175,7 @@ async function scheduled(
     const buildXClient = async (accountId: string): Promise<XClient | null> => {
       const account = dbAccounts.find((a) => a.id === accountId);
       if (!account) return null;
-      return account.consumer_key && account.consumer_secret && account.access_token_secret
-        ? new XClient({
-            type: 'oauth1',
-            consumerKey: account.consumer_key,
-            consumerSecret: account.consumer_secret,
-            accessToken: account.access_token,
-            accessTokenSecret: account.access_token_secret,
-          })
-        : new XClient(account.access_token);
+      return buildXClientForAccount(account, env);
     };
     await processStepSequences(env.DB, buildXClient);
   }

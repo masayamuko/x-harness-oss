@@ -3,6 +3,7 @@ import { getEngagementGateById, getDeliveredUserIds, getXAccounts, createDeliver
 import type { Env } from '../index.js';
 import { EngagementCache, checkConditions } from '../services/reply-trigger-cache.js';
 import { XClient, XApiError, XApiRateLimitError } from '@x-harness/x-sdk';
+import { buildXClientForAccount } from '../client-factory.js';
 
 const verify = new Hono<Env>();
 
@@ -396,20 +397,12 @@ async function fetchAndCacheMetered(
 
 // ─── Helper: build XClient from gate's account ───
 
-async function buildXClientForGate(db: D1Database, gate: { x_account_id: string }) {
+async function buildXClientForGate(db: D1Database, gate: { x_account_id: string }, env: Env['Bindings']) {
   const accounts = await getXAccounts(db);
   const account = accounts.find((a) => a.id === gate.x_account_id);
   if (!account) return null;
 
-  const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-    ? new XClient({
-        type: 'oauth1',
-        consumerKey: account.consumer_key,
-        consumerSecret: account.consumer_secret,
-        accessToken: account.access_token,
-        accessTokenSecret: account.access_token_secret,
-      })
-    : new XClient(account.access_token);
+  const xClient = buildXClientForAccount(account, env);
 
   return { xClient, account };
 }
@@ -477,7 +470,7 @@ verify.get('/api/engagement-gates/:id/verify', async (c) => {
     }
 
     // 2. Not in cache — resolve username and check follower_id_cache / X API
-    const clientResult = await buildXClientForGate(c.env.DB, gate);
+    const clientResult = await buildXClientForGate(c.env.DB, gate, c.env);
     if (!clientResult) return c.json({ success: false, error: 'X account not found' }, 500);
 
     // This endpoint is public and each unknown username costs a billable
@@ -699,7 +692,7 @@ verify.get('/api/engagement-gates/:id/verify', async (c) => {
       }
       const updatedConditions = { ...match.conditions };
       let needsApiCheck = false;
-      const clientResult = await buildXClientForGate(c.env.DB, gate);
+      const clientResult = await buildXClientForGate(c.env.DB, gate, c.env);
 
       // Try D1 follower_id_cache first (zero X API cost). Unlike the generic
       // followers table (which also holds delivered users from non-follow
@@ -796,7 +789,7 @@ verify.get('/api/engagement-gates/:id/verify', async (c) => {
         },
       });
     }
-    const clientForRefresh = await buildXClientForGate(c.env.DB, gate);
+    const clientForRefresh = await buildXClientForGate(c.env.DB, gate, c.env);
     if (clientForRefresh) {
       try {
         const fresh = await fetchAndCacheDeduped(c.env.DB, clientForRefresh.xClient, gate, clientForRefresh.account.x_user_id);
@@ -830,7 +823,7 @@ verify.get('/api/engagement-gates/:id/verify', async (c) => {
   }
 
   // ─── Cache miss: fetch from X API ───
-  const clientResult = await buildXClientForGate(c.env.DB, gate);
+  const clientResult = await buildXClientForGate(c.env.DB, gate, c.env);
   if (!clientResult) return c.json({ success: false, error: 'X account not found' }, 500);
 
   try {
@@ -893,7 +886,7 @@ verify.get('/api/engagement-gates/:id/repliers', async (c) => {
   }
 
   // ─── Cache miss: fetch and cache ───
-  const clientResult = await buildXClientForGate(c.env.DB, gate);
+  const clientResult = await buildXClientForGate(c.env.DB, gate, c.env);
   if (!clientResult) return c.json({ success: false, error: 'X account not found' }, 500);
 
   try {

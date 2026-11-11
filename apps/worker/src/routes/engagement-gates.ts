@@ -4,6 +4,7 @@ import {
   updateEngagementGate, deleteEngagementGate, getDeliveries, resolveToken,
 } from '@x-harness/db';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 const engagementGates = new Hono<Env>();
 
@@ -133,22 +134,13 @@ engagementGates.get('/api/engagement-gates/:id/analytics', async (c) => {
 
 // Debug: manually trigger engagement gate processing
 engagementGates.post('/api/engagement-gates/process', async (c) => {
-  const { XClient } = await import('@x-harness/x-sdk');
   const { getXAccounts } = await import('@x-harness/db');
   const { processEngagementGates } = await import('../services/engagement-gate.js');
   const accounts = await getXAccounts(c.env.DB);
   const results: any[] = [];
   for (const account of accounts) {
     try {
-      const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-        ? new XClient({
-            type: 'oauth1',
-            consumerKey: account.consumer_key,
-            consumerSecret: account.consumer_secret,
-            accessToken: account.access_token,
-            accessTokenSecret: account.access_token_secret,
-          })
-        : new XClient(account.access_token);
+      const xClient = buildXClientForAccount(account, c.env);
       await processEngagementGates(c.env.DB, xClient, account.id, true);
       results.push({ account: account.username, status: 'ok' });
     } catch (err: any) {

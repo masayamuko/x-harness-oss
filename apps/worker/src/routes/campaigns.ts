@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
-import { XClient } from '@x-harness/x-sdk';
 import { createEngagementGate, getXAccountById, updateEngagementGate, incrementApiUsage } from '@x-harness/db';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 const campaigns = new Hono<Env>();
 
@@ -80,15 +80,7 @@ campaigns.post('/api/campaigns', async (c) => {
   }
 
   // Build XClient
-  const xClient = account.consumer_key && account.consumer_secret && account.access_token_secret
-    ? new XClient({
-        type: 'oauth1',
-        consumerKey: account.consumer_key,
-        consumerSecret: account.consumer_secret,
-        accessToken: account.access_token,
-        accessTokenSecret: account.access_token_secret,
-      })
-    : new XClient(account.access_token);
+  const xClient = buildXClientForAccount(account, c.env);
 
   // Step 1: Create a placeholder gate first (need gateId for LINE form webhook URL)
   // Use a temporary postId — will be updated after tweet creation

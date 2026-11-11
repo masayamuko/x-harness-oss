@@ -1,30 +1,17 @@
 import { Hono } from 'hono';
-import { XClient } from '@x-harness/x-sdk';
 import { createScheduledPost, getScheduledPosts, deleteScheduledPost, getXAccountById, getXAccounts, incrementApiUsage, resolveFreeSlot, saveQuoteTweets, getQuoteTweetsByAccount, getQuoteTweetsBySource, getLatestDiscoveredAt, recordAction, getActions } from '@x-harness/db';
 import type { SaveQuoteTweetInput } from '@x-harness/db';
 import type { Env } from '../index.js';
+import { buildXClientForAccount } from '../client-factory.js';
 
 const posts = new Hono<Env>();
-
-// Helper: build XClient from account record
-function buildXClient(account: { consumer_key: string | null; consumer_secret: string | null; access_token: string; access_token_secret: string | null }): XClient {
-  return account.consumer_key && account.consumer_secret && account.access_token_secret
-    ? new XClient({
-        type: 'oauth1',
-        consumerKey: account.consumer_key,
-        consumerSecret: account.consumer_secret,
-        accessToken: account.access_token,
-        accessTokenSecret: account.access_token_secret,
-      })
-    : new XClient(account.access_token);
-}
 
 posts.post('/api/posts', async (c) => {
   const { xAccountId, text, mediaIds, quoteTweetId, paidPartnership } = await c.req.json<{ xAccountId: string; text: string; mediaIds?: string[]; quoteTweetId?: string; paidPartnership?: boolean }>();
   if (!text || !xAccountId) return c.json({ success: false, error: 'Missing required fields: xAccountId, text' }, 400);
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     const tweet = await xClient.createTweet({
       text,
@@ -124,7 +111,7 @@ posts.delete('/api/posts/:tweetId', async (c) => {
     }
   }
 
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     await xClient.deleteTweet(tweetId);
     c.executionCtx.waitUntil(incrementApiUsage(c.env.DB, account.id, 'delete_tweet'));
@@ -142,7 +129,7 @@ posts.post('/api/posts/thread', async (c) => {
   }
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     const results: { id: string; text: string }[] = [];
     let previousId: string | undefined;
@@ -173,7 +160,7 @@ posts.get('/api/posts/search', async (c) => {
     account = accounts[0] || null;
   }
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   // Default LOW (10): pay-per-use bills per post returned ($0.005/post)
   const maxResultsParam = c.req.query('maxResults');
   const maxResults = maxResultsParam ? Math.min(Math.max(Number(maxResultsParam), 10), 100) : 10;
@@ -195,7 +182,7 @@ posts.get('/api/x-users/:username/tweets', async (c) => {
   const accounts = await getXAccounts(c.env.DB);
   const account = accounts[0] || null;
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   const limit = limitParam ? Math.min(Number(limitParam), 100) : 100;
   try {
     const userId = knownUserId ?? (await xClient.getUserByUsername(username)).id;
@@ -220,7 +207,7 @@ posts.get('/api/posts/history', async (c) => {
     account = accounts[0] || null;
   }
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   const limit = limitParam ? Math.min(Number(limitParam), 100) : 20;
   try {
     const res = await xClient.getUserTweets(account.x_user_id, limit, cursor ?? undefined);
@@ -244,7 +231,7 @@ posts.get('/api/posts/mentions', async (c) => {
     account = accounts[0] || null;
   }
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     const query = `to:${account.username} is:reply`;
     c.executionCtx.waitUntil(incrementApiUsage(c.env.DB, account.id, 'search_mentions'));
@@ -387,7 +374,7 @@ posts.post('/api/posts/:id/reply', async (c) => {
   if (!xAccountId || !text) return c.json({ success: false, error: 'Missing required fields: xAccountId, text' }, 400);
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     const tweet = await xClient.createTweet({ text, reply: { in_reply_to_tweet_id: tweetId } });
     c.executionCtx.waitUntil(recordAction(c.env.DB, { xAccountId, tweetId, actionType: 'reply' }));
@@ -402,7 +389,7 @@ posts.get('/api/x-accounts/:id/subscription', async (c) => {
   const xAccountId = c.req.param('id');
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     const user = await xClient.getMeWithSubscription();
     const subscriptionType = user.subscription_type ?? 'None';
@@ -444,7 +431,7 @@ posts.post('/api/media/upload', async (c) => {
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
 
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     const mediaData = await file.arrayBuffer();
     const mediaCategory = (formData.get('mediaCategory') as string | null) ?? 'tweet_image';
@@ -463,7 +450,7 @@ posts.post('/api/posts/:id/like', async (c) => {
   if (!xAccountId) return c.json({ success: false, error: 'Missing required field: xAccountId' }, 400);
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     await xClient.likeTweet(account.x_user_id, tweetId);
     c.executionCtx.waitUntil(incrementApiUsage(c.env.DB, account.id, 'like_tweet'));
@@ -481,7 +468,7 @@ posts.post('/api/posts/:id/retweet', async (c) => {
   if (!xAccountId) return c.json({ success: false, error: 'Missing required field: xAccountId' }, 400);
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
   try {
     await xClient.retweet(account.x_user_id, tweetId);
     c.executionCtx.waitUntil(incrementApiUsage(c.env.DB, account.id, 'retweet'));
@@ -504,7 +491,7 @@ posts.get('/api/posts/:id/quotes', async (c) => {
     account = accounts[0] || null;
   }
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
 
   // Fetch from DB first
   const dbQuotes = await getQuoteTweetsBySource(c.env.DB, tweetId);
@@ -630,7 +617,7 @@ posts.post('/api/quotes/sync', async (c) => {
   if (!xAccountId) return c.json({ success: false, error: 'Missing xAccountId' }, 400);
   const account = await getXAccountById(c.env.DB, xAccountId);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClientForAccount(account, c.env);
 
   try {
     // Get recent tweets

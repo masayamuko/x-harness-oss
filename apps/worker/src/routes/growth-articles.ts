@@ -121,7 +121,7 @@ growthArticles.post('/api/growth/articles/:id/publish', async (c) => {
 
   const account = await getXAccountById(c.env.DB, article.x_account_id);
   if (!account) return c.json({ success: false, error: 'X account not found' }, 404);
-  const xClient = buildXClient(account);
+  const xClient = buildXClient(account, c.env);
 
   try {
     let xArticleDraftId = article.x_article_draft_id;
